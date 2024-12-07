@@ -1,0 +1,29 @@
+#!/bin/bash
+
+COUNT=$(docker ps -a | grep rabbit-node | wc -l | xargs)
+NODE_NAME="rabbit-node-$COUNT"
+
+[ "$(docker ps -a | grep $NODE_NAME)" ] && echo "node name already taken" && exit 1
+
+PORT=$(( 5600 + $COUNT ))
+MANAGEMENT_PORT=$(( 15600 + $COUNT ))
+
+[ $COUNT -eq 0 ] && MANAGEMENT_OPTS="-p $MANAGEMENT_PORT:15672 -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=4dm1np4ss!"
+
+[ "$(docker network ls | grep rabbit-cluster)" ] || docker network create rabbit-cluster
+
+docker run -d \
+    --name="$NODE_NAME" \
+    --hostname="$NODE_NAME" \
+    -e RABBITMQ_ERLANG_COOKIE="microservices-shared-cookie-Y3VjaG6gcm9ja3Mh42" \
+    -e RABBITMQ_NODENAME="$NODE_NAME" \
+    -p $PORT:5672 \
+    $MANAGEMENT_OPTS \
+    --network "rabbit-cluster" \
+    billyexplains/rabbitmq-for-k8s:4.0.4-management
+
+
+[ $COUNT -gt 0 ] && echo "booting" && docker exec $NODE_NAME /bin/bash -c "while (! rabbitmqctl await_startup > /dev/null 2>&1); do sleep 5 && echo waiting...; done" && echo "ready" 
+[ $COUNT -gt 0 ] && IT_WAS_DEAD=$(echo "$(docker exec $NODE_NAME /bin/bash -c 'rabbitmqctl -n rabbit-node-0@rabbit-node-0 cluster_status')" | grep $NODE_NAME@$NODE_NAME)
+[ $COUNT -gt 0 ] && [ ! -z "$IT_WAS_DEAD" ] && docker exec $NODE_NAME /bin/bash -c "rabbitmqctl -n rabbit-node-0@rabbit-node-0 forget_cluster_node $NODE_NAME@$NODE_NAME"
+[ $COUNT -gt 0 ] && docker exec $NODE_NAME /bin/bash -c "rabbitmqctl stop_app && rabbitmqctl join_cluster rabbit-node-0@rabbit-node-0 --ram && rabbitmqctl start_app"
